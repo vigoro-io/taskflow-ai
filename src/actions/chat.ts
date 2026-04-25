@@ -23,6 +23,20 @@ export type ChatResponse = {
 type ModelType = "haiku" | "sonnet";
 
 /**
+ * Detecta si el usuario está pidiendo explícitamente más detalles
+ */
+function isAskingForDetails(query: string): boolean {
+  const detailKeywords = [
+    "más detalle", "cuéntame más", "explica", "explicación", "detalles",
+    "dime más", "amplia", "profundiza", "describe", "qué más",
+    "información completa", "todo sobre", "lista completa"
+  ];
+
+  const lowerQuery = query.toLowerCase();
+  return detailKeywords.some(keyword => lowerQuery.includes(keyword));
+}
+
+/**
  * Detecta si una pregunta es compleja y requiere Sonnet
  */
 function isComplexQuery(query: string): boolean {
@@ -55,9 +69,10 @@ export async function chatWithTasks(
 ): Promise<ChatResponse> {
   const sources = await searchTasks(userMessage, 0.3, 10);
 
-  // Determinar si la pregunta es compleja
+  // Determinar si la pregunta es compleja o si pide detalles
+  const askingForDetails = isAskingForDetails(userMessage);
   const isComplex = isComplexQuery(userMessage);
-  const suggestSonnet = isComplex && model === "haiku";
+  const suggestSonnet = isComplex && model === "haiku" && !askingForDetails;
 
   // Construir contexto más informativo
   let context = "";
@@ -69,30 +84,52 @@ export async function chatWithTasks(
     context = "No se encontraron tareas que coincidan con la búsqueda.";
   }
 
-  const systemPrompt = `Eres un asistente de gestión de tareas para TaskFlow AI.
-
-IMPORTANTE: Debes responder basándote ÚNICAMENTE en las tareas que se te proporcionan abajo. Si las tareas muestran información, debes reportarla fielmente.
+  const systemPrompt = askingForDetails
+    ? `Eres un asistente de gestión de tareas para TaskFlow AI.
 
 ${context}
 
-INSTRUCCIONES:
-1. Responde en español de forma concisa y directa
-2. Si encuentras tareas en el contexto, menciona su cantidad exacta y detalles relevantes
-3. Si no hay tareas, indica claramente "No hay tareas [estado solicitado]"
-4. Usa los datos exactos del contexto (estado, prioridad, fechas)
-5. No inventes información que no esté en el contexto
+El usuario está pidiendo DETALLES ESPECÍFICOS. Proporciona:
+- Nombres de las tareas
+- Estados y prioridades
+- Fechas si son relevantes
+- Sé completo pero organizado
 
-ESTADOS DE TAREAS:
-- "por hacer" = tareas pendientes/por comenzar
-- "en progreso" = tareas activas/en desarrollo
-- "terminado" = tareas completadas/finalizadas`;
+Responde SOLO con información del contexto proporcionado arriba.`
+    : `Eres un asistente conciso de gestión de tareas para TaskFlow AI.
+
+${context}
+
+FORMATO OBLIGATORIO DE RESPUESTA:
+1. Comienza con "Sí" o "No"
+2. Máximo 10 palabras de explicación
+3. Si hay más info, termina con: "¿Necesitas más detalle?"
+
+EJEMPLOS CORRECTOS:
+"Sí, tienes 3 tareas por hacer. ¿Necesitas más detalle?"
+"No, no hay tareas pendientes."
+"Sí, 4 tareas en progreso actualmente."
+
+NO HAGAS:
+- Explicaciones largas sin que lo pidan
+- Listar detalles a menos que pregunten específicamente
+- Inventar información no presente en el contexto
+
+ESTADOS:
+- "por hacer" = pendiente
+- "en progreso" = activo
+- "terminado" = completo`;
 
   const anthropic = getAnthropicClient();
   const modelId = model === "sonnet" ? "claude-sonnet-4-5" : "claude-haiku-4-5";
 
+  // Tokens más bajos para respuestas concisas
+  // Haiku: 150 tokens (aprox 15-20 palabras), Sonnet: 300 para análisis complejos
+  const maxTokens = model === "sonnet" ? 300 : 150;
+
   const response = await anthropic.messages.create({
     model: modelId,
-    max_tokens: 512,
+    max_tokens: maxTokens,
     system: systemPrompt,
     messages: [{ role: "user", content: userMessage }],
   });

@@ -3,9 +3,15 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { searchTasks, type SearchResult } from "@/actions/search";
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+function getAnthropicClient() {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("ANTHROPIC_API_KEY no está configurada");
+  }
+
+  return new Anthropic({ apiKey });
+}
 
 export type ChatResponse = {
   answer: string;
@@ -27,6 +33,7 @@ ${context}
 
 Responde en español. Si la información no está en el contexto, indícalo claramente. Sé conciso y útil.`;
 
+  const anthropic = getAnthropicClient();
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-5",
     max_tokens: 1024,

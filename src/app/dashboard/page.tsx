@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation";
-import { Plus, LogOut } from "lucide-react";
+import { LogOut } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { getTasks } from "@/actions/tasks";
 import { signOut } from "@/actions/auth";
 import { KanbanBoard } from "@/components/kanban-board";
 import { TaskChat } from "@/components/chat/task-chat";
+import { CreateTaskDialog } from "@/components/create-task-dialog";
 
 export default async function DashboardPage() {
   const supabase = await createClient();
@@ -29,10 +30,7 @@ export default async function DashboardPage() {
           </span>
         </div>
 
-        <button className="flex items-center gap-1.5 bg-green-500 hover:bg-green-600 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
-          <Plus className="size-4" />
-          Nueva Tarea
-        </button>
+        <CreateTaskDialog />
 
         <div className="flex items-center gap-4">
           <span className="text-sm text-neutral-400">{user.email}</span>

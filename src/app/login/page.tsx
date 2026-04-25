@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import LoginForm from "@/components/LoginForm";
 
 async function login(formData: FormData) {
   "use server";
@@ -38,51 +39,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           </span>
         </div>
 
-        <form
-          action={login}
-          className="bg-white/5 border border-white/10 rounded-xl p-6 space-y-4"
-        >
-          {error && (
-            <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
-              {error}
-            </p>
-          )}
-
-          <div className="space-y-1.5">
-            <label htmlFor="email" className="text-sm text-neutral-300">
-              Email
-            </label>
-            <input
-              id="email"
-              name="email"
-              type="email"
-              required
-              className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-white placeholder:text-neutral-500 focus:outline-none focus:border-green-500/50"
-              placeholder="tu@email.com"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label htmlFor="password" className="text-sm text-neutral-300">
-              Contraseña
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              required
-              className="w-full rounded-lg bg-white/5 border border-white/10 px-3 py-2 text-sm text-white placeholder:text-neutral-500 focus:outline-none focus:border-green-500/50"
-              placeholder="••••••••"
-            />
-          </div>
-
-          <button
-            type="submit"
-            className="w-full bg-green-500 hover:bg-green-600 text-white text-sm font-medium py-2.5 rounded-lg transition-colors"
-          >
-            Iniciar sesión
-          </button>
-        </form>
+        <LoginForm login={login} error={error} />
       </div>
     </div>
   );

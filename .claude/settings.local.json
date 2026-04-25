@@ -2,7 +2,17 @@
   "permissions": {
     "allow": [
       "Bash(npx tsc:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(npm run test:*)",
+      "Bash(npm run test:coverage:*)",
+      "Bash(npx tsx:*)",
+      "Bash(npm run script:diagnose:*)",
+      "Bash(pkill:*)",
+      "Bash(npm run dev:*)",
+      "Bash(node:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(unset:*)",
+      "Bash(git add:*)"
     ]
   }
 }

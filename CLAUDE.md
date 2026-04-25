@@ -11,14 +11,16 @@ npm run start                                      # Start production server
 npm run script:reset-password <email> <password>   # Reset Supabase user password & confirm email
 npm run script:diagnose                            # Diagnose chat/API configuration issues
 npm run script:embed-tasks                         # Generate embeddings for all tasks
-npm run test                                       # Run unit tests with Vitest
+npm run test                                       # Run all unit tests with Vitest
 npm run test:watch                                 # Run unit tests in watch mode
+npm run test -- <path>                             # Run specific test file (e.g., src/actions/__tests__/chat.test.ts)
 npm run test:coverage                              # Run unit tests with coverage report (80% threshold)
-npm run test:e2e       # Run E2E tests with Playwright
-npm run test:e2e:ui    # Run E2E tests with Playwright UI
+npm run test:e2e                                   # Run E2E tests with Playwright
+npm run test:e2e:ui                                # Run E2E tests with Playwright UI (interactive)
+npm run test:e2e:headed                            # Run E2E tests in headed mode (see browser)
 ```
 
-No linter is configured.
+No linter is configured. TypeScript strict mode is enforced in builds.
 
 ### Utility Scripts
 
@@ -95,9 +97,9 @@ All mutations go through Server Actions in `src/actions/`:
 | File | Actions | Purpose |
 |------|---------|---------|
 | `auth.ts` | login, signOut | Authentication operations |
-| `tasks.ts` | getTasks, updateTaskStatus | Task read and status updates (create/delete actions not yet implemented) |
-| `search.ts` | searchTasks | Semantic search via pgvector |
-| `chat.ts` | chatWithTasks | RAG chat with Claude |
+| `tasks.ts` | getTasks, createTask, updateTaskStatus | Task CRUD and status updates; `createTask` also generates embeddings |
+| `search.ts` | searchTasks | Semantic search via pgvector with status filtering |
+| `chat.ts` | chatWithTasks | RAG chat with query normalization, semantic search, and Claude response |
 
 **Pattern:**
 ```typescript
@@ -148,12 +150,13 @@ Always use these constants instead of hardcoding strings.
 **Styling:** Tailwind CSS v4 (PostCSS). Dark theme with green accents — background `#0f0f1a`. Spanish labels throughout.
 
 **Component structure:**
-- `src/components/ui/` - Radix UI primitives (button, dialog, select, input, card, badge)
-- `src/components/kanban-board.tsx` - Main Kanban container (client component)
+- `src/components/ui/` - Radix UI primitives (button, dialog, select, input, card, badge, textarea, label)
+- `src/components/kanban-board.tsx` - Main Kanban container (client component, uses three custom hooks)
 - `src/components/kanban-column.tsx` - Droppable column with status badge
 - `src/components/task-card.tsx` - Task card with priority badge and metadata
 - `src/components/sortable-task-card.tsx` - Wrapper for dnd-kit sortable behavior
-- `src/components/chat/task-chat.tsx` - AI chat interface (floating button + dialog)
+- `src/components/create-task-dialog.tsx` - Task creation form (dialog with title/description/priority/status inputs, calls `createTask` server action)
+- `src/components/chat/task-chat.tsx` - AI chat interface (floating button + dialog with RAG search)
 - `src/components/LoginForm.tsx` - Login form with password visibility toggle
 
 **UI libraries:**
@@ -165,20 +168,29 @@ Always use these constants instead of hardcoding strings.
 
 `src/components/chat/task-chat.tsx` renders the chat UI. On submit it calls `chatWithTasks` (Server Action in `src/actions/chat.ts`), which:
 
-1. Embeds the user query via Voyage AI (`src/lib/embeddings.ts` → `embedQuery`)
-   - Uses `input_type: "query"` for optimal retrieval performance
-2. Calls `searchTasks` (`src/actions/search.ts`) with threshold 0.4 and limit 8
-   - Runs the `match_task_embeddings` Supabase RPC function
-   - Returns tasks sorted by cosine similarity (1 - distance)
-3. Formats retrieved task snippets as numbered context
-4. Sends context + user message to Claude Sonnet 4.5 (max_tokens: 1024)
-5. Returns AI response with sources
+1. **Query normalization** via `normalizeQuery()` (`src/lib/query-normalizer.ts`):
+   - Converts user intent words (e.g., "terminado", "en progreso") to canonical task statuses
+   - Handles plural/singular and gender variants in Spanish
+   - Returns structured query with extracted status filter and cleaned text
+
+2. **Semantic search** via `searchTasks()` (`src/actions/search.ts`):
+   - Embeds normalized query via Voyage AI (`src/lib/embeddings.ts` → `embedQuery`) using `input_type: "query"`
+   - Calls `match_task_embeddings` RPC with dynamic threshold (0.4–0.5) and limit 8
+   - Returns tasks sorted by cosine similarity; applies status filter if detected
+
+3. **Response formatting**:
+   - Retrieves context snippets; if <2 tasks found, returns short yes/no response (≤10 words)
+   - Otherwise formats task context as numbered list with title + first 100 chars of description
+
+4. **Chat generation**:
+   - Sends context + user message to Claude Sonnet 4.5 (max_tokens: 1024)
+   - System prompt instructs concise Spanish responses with sources
 
 **Embedding generation:**
-- When tasks are created/updated, call `embedTask` (`src/lib/embed-task.ts`) to upsert vectors
+- When tasks are created/updated, `embedTask()` (`src/lib/embed-task.ts`) generates and upserts vectors
 - Format: `title. description. Prioridad: X. Estado: Y`
-- Uses Voyage AI `voyage-3.5` model with `input_type: "document"`
-- Embeddings are 1024-dimensional, stored as `halfvec` for efficiency
+- Uses Voyage AI `voyage-3.5` with `input_type: "document"`
+- Embeddings are 1024-dimensional halfvec, indexed with HNSW for fast cosine search
 
 ### Database schema
 
@@ -260,25 +272,62 @@ Three main hooks power the Kanban board:
 **TypeScript:**
 - Strict mode enabled - never use `any`
 - Always define proper types, import from `src/types/`
+- Export types explicitly from definition files
 
 **Next.js patterns:**
 - Server Components by default, `'use client'` only when needed (state, events, browser APIs)
 - Server Actions for all mutations with `'use server'` directive
 - Call `revalidatePath()` after mutations to refresh cached data
+- Never fetch user data in Client Components — fetch in Server Components and pass as props
 
 **Supabase:**
 - RLS enabled on all tables - policies enforce user isolation
 - Always use `auth.uid()` in policies, never `auth.jwt()`
-- Use correct client: server.ts for Server Components/Actions, client.ts for Client Components
+- Use correct client: `server.ts` for Server Components/Actions, `client.ts` for Client Components
 
 **Security:**
 - API keys only in environment variables, never hardcoded
 - Service role key only for admin scripts, never in frontend code
+- Validate all external input (user queries, API responses)
 
 **Error handling:**
-- Wrap async operations in try/catch
-- Throw descriptive errors from Server Actions
-- Let client components handle error display to users
+- Wrap async operations in try/catch blocks with descriptive error messages
+- Throw errors from Server Actions; client handles display
+- Always resolve promises and handle async errors properly
+- Return empty arrays/objects rather than null for missing data
+
+**Spanish localization:**
+- All UI labels, error messages, and placeholder text in Spanish
+- Use KANBAN_COLUMNS and PRIORITY_CONFIG constants for display mappings
+- Task statuses: `"todo"` → "Por hacer", `"in_progress"` → "En progreso", `"done"` → "Terminado"
+- Priority labels: `"low"` → "BAJA", `"medium"` → "MEDIA", `"high"` → "ALTA", `"critical"` → "CRÍTICA"
+
+## Quick Reference
+
+**Import patterns:**
+```typescript
+// Server Actions
+import { createClient } from "@/lib/supabase/server";
+import { revalidatePath } from "next/cache";
+
+// Client Components
+"use client";
+import { createClient } from "@/lib/supabase/client";
+
+// Types
+import type { Task, TaskStatus, TaskPriority } from "@/types/tasks";
+import { KANBAN_COLUMNS, PRIORITY_CONFIG } from "@/types/tasks";
+
+// AI/Embeddings
+import { embedQuery, embedTask } from "@/lib/embeddings";
+import { normalizeQuery } from "@/lib/query-normalizer";
+```
+
+**Testing patterns:**
+- Unit tests in `__tests__/` subdirectories (e.g., `src/actions/__tests__/chat.test.ts`)
+- Mock Supabase: `vi.mock("@/lib/supabase/server", { createClient: vi.fn(...) })`
+- E2E tests use authenticated session from `.auth/user.json` (populated by auth.setup.ts)
+- Run specific test: `npm run test -- src/actions/__tests__/chat.test.ts`
 
 ## Troubleshooting
 
@@ -289,13 +338,14 @@ npm run script:diagnose
 
 Common issues:
 
-- **Chat error "Ocurrió un error...":** ANTHROPIC_API_KEY is invalid or missing. See TROUBLESHOOTING.md
-- **No search results:** Run `npm run script:embed-tasks` to generate embeddings
-- **Build errors:** Delete `.next/` folder and restart dev server
-- **Port conflicts:** Multiple dev servers running? Kill all with `pkill -f "next dev"`
-- **Path alias `@/*` not working:** Restart TypeScript server in IDE
-- **Auth not working:** Verify middleware.ts has `await supabase.auth.getUser()` call
-- **User can't login after password reset:** User's `email_confirmed_at` must not be NULL in `auth.users` table
-- **RPC function not found:** Run migrations in `supabase/migrations/`
+- **Chat error "Ocurrió un error...":** `ANTHROPIC_API_KEY` invalid/missing. See TROUBLESHOOTING.md for setup
+- **No search results:** Run `npm run script:embed-tasks` to generate embeddings for existing tasks
+- **Build errors:** Delete `.next/` and restart: `rm -rf .next && npm run dev`
+- **Port conflicts:** Kill all Node processes: `pkill -f "next dev"`
+- **Path alias `@/*` not working:** Restart TypeScript server (Cmd+Shift+P in VS Code)
+- **Auth not working:** Verify `middleware.ts` line 33 has `await supabase.auth.getUser()` call — do not remove
+- **User can't login after password reset:** Check `email_confirmed_at` is not NULL: `SELECT email, email_confirmed_at FROM auth.users WHERE email = 'user@example.com';`
+- **RPC function error:** Run migrations: `supabase db push` or execute SQL files in order from `supabase/migrations/`
+- **Test user email not confirming:** Use reset-password script: `npm run script:reset-password test@example.com password123`
 
-See **TROUBLESHOOTING.md** for detailed solutions.
+See **TROUBLESHOOTING.md** for detailed solutions and Spanish error messages.

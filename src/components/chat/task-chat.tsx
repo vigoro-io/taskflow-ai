@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Send, Bot, User, Mic, MicOff } from "lucide-react";
+import { Send, Bot, User, Mic, MicOff, Zap, AlertCircle } from "lucide-react";
 import { chatWithTasks } from "@/actions/chat";
 
 // Web Speech API — types not yet in TypeScript's dom lib
@@ -29,7 +29,10 @@ type SpeechRecognitionConstructor = new () => ISpeechRecognition;
 type Message = {
   role: "user" | "assistant";
   content: string;
+  suggestSonnet?: boolean;
 };
+
+const MAX_WORDS = 200;
 
 function getSpeechRecognitionClass(): SpeechRecognitionConstructor | undefined {
   if (typeof window === "undefined") return undefined;
@@ -45,6 +48,9 @@ export function TaskChat() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [useSonnet, setUseSonnet] = useState(false);
+  const [wordCount, setWordCount] = useState(0);
+  const [showAlert, setShowAlert] = useState(false);
   const recognitionRef = useRef<ISpeechRecognition | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -71,7 +77,7 @@ export function TaskChat() {
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       const transcript = event.results[0]?.[0]?.transcript ?? "";
-      setInput(transcript);
+      handleInputChange(transcript);
     };
 
     recognition.onend = () => setRecording(false);
@@ -82,18 +88,54 @@ export function TaskChat() {
     setRecording(true);
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  function countWords(text: string): number {
+    return text.trim().split(/\s+/).filter(Boolean).length;
+  }
+
+  function handleInputChange(text: string) {
+    const words = countWords(text);
+    setWordCount(words);
+
+    if (words > MAX_WORDS) {
+      setShowAlert(true);
+      setTimeout(() => setShowAlert(false), 3000);
+      return; // No actualizar el input si excede el límite
+    }
+
+    setInput(text);
+    setShowAlert(false);
+  }
+
+  async function handleSubmit(e: React.FormEvent, forceModel?: "haiku" | "sonnet") {
     e.preventDefault();
     const query = input.trim();
     if (!query || loading) return;
 
+    const words = countWords(query);
+    if (words > MAX_WORDS) {
+      setShowAlert(true);
+      setTimeout(() => setShowAlert(false), 3000);
+      return;
+    }
+
     setInput("");
+    setWordCount(0);
     setLoading(true);
     setMessages((prev) => [...prev, { role: "user", content: query }]);
 
     try {
-      const { answer } = await chatWithTasks(query);
-      setMessages((prev) => [...prev, { role: "assistant", content: answer }]);
+      const model = forceModel || (useSonnet ? "sonnet" : "haiku");
+      const { answer, suggestSonnet } = await chatWithTasks(query, model);
+
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: answer, suggestSonnet },
+      ]);
+
+      // Si usamos Sonnet para esta pregunta, volver a Haiku para la siguiente
+      if (useSonnet) {
+        setUseSonnet(false);
+      }
     } catch {
       setMessages((prev) => [
         ...prev,
@@ -124,29 +166,43 @@ export function TaskChat() {
         )}
 
         {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-          >
-            {msg.role === "assistant" && (
-              <div className="shrink-0 size-7 rounded-full bg-green-500/20 flex items-center justify-center">
-                <Bot className="size-3.5 text-green-400" />
-              </div>
-            )}
-
+          <div key={i}>
             <div
-              className={`max-w-[80%] rounded-xl px-4 py-2.5 text-sm leading-relaxed ${
-                msg.role === "user"
-                  ? "bg-green-500/20 text-green-100"
-                  : "bg-white/5 text-neutral-200"
-              }`}
+              className={`flex gap-3 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
             >
-              {msg.content}
+              {msg.role === "assistant" && (
+                <div className="shrink-0 size-7 rounded-full bg-green-500/20 flex items-center justify-center">
+                  <Bot className="size-3.5 text-green-400" />
+                </div>
+              )}
+
+              <div
+                className={`max-w-[80%] rounded-xl px-4 py-2.5 text-sm leading-relaxed ${
+                  msg.role === "user"
+                    ? "bg-green-500/20 text-green-100"
+                    : "bg-white/5 text-neutral-200"
+                }`}
+              >
+                {msg.content}
+              </div>
+
+              {msg.role === "user" && (
+                <div className="shrink-0 size-7 rounded-full bg-white/10 flex items-center justify-center">
+                  <User className="size-3.5 text-neutral-400" />
+                </div>
+              )}
             </div>
 
-            {msg.role === "user" && (
-              <div className="shrink-0 size-7 rounded-full bg-white/10 flex items-center justify-center">
-                <User className="size-3.5 text-neutral-400" />
+            {/* Sugerencia para usar Sonnet */}
+            {msg.role === "assistant" && msg.suggestSonnet && !useSonnet && (
+              <div className="flex justify-start mt-2 ml-10">
+                <button
+                  onClick={() => setUseSonnet(true)}
+                  className="flex items-center gap-1.5 text-xs text-yellow-400 hover:text-yellow-300 bg-yellow-500/10 hover:bg-yellow-500/20 px-2.5 py-1.5 rounded-lg transition-colors"
+                >
+                  <Zap className="size-3" />
+                  Esta pregunta parece compleja. ¿Usar Sonnet para más detalle?
+                </button>
               </div>
             )}
           </div>
@@ -168,15 +224,40 @@ export function TaskChat() {
         <div ref={bottomRef} />
       </div>
 
-      <form onSubmit={handleSubmit} className="p-3 border-t border-white/10 flex gap-2">
-        <input
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="¿Qué tareas tengo pendientes?"
-          disabled={loading}
-          className="flex-1 bg-white/5 text-white text-sm placeholder:text-neutral-500 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-green-500/50 disabled:opacity-50"
-        />
+      <form onSubmit={handleSubmit} className="p-3 border-t border-white/10">
+        {/* Alerta de límite de palabras */}
+        {showAlert && (
+          <div className="flex items-center gap-2 mb-2 text-xs text-red-400 bg-red-500/10 px-3 py-2 rounded-lg">
+            <AlertCircle className="size-3.5 shrink-0" />
+            <span>Límite de {MAX_WORDS} palabras excedido. Por favor, acorta tu mensaje.</span>
+          </div>
+        )}
+
+        {/* Indicador de modelo activo */}
+        {useSonnet && (
+          <div className="flex items-center gap-2 mb-2 text-xs text-yellow-400 bg-yellow-500/10 px-3 py-2 rounded-lg">
+            <Zap className="size-3.5 shrink-0" />
+            <span>Sonnet activado para la próxima pregunta (más potente)</span>
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          <div className="flex-1 relative">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => handleInputChange(e.target.value)}
+              placeholder="¿Qué tareas tengo pendientes?"
+              disabled={loading}
+              className="w-full bg-white/5 text-white text-sm placeholder:text-neutral-500 rounded-lg px-3 py-2 outline-none focus:ring-1 focus:ring-green-500/50 disabled:opacity-50"
+            />
+            {/* Contador de palabras */}
+            <div className={`absolute right-2 top-1/2 -translate-y-1/2 text-xs ${
+              wordCount > MAX_WORDS ? "text-red-400" : "text-neutral-500"
+            }`}>
+              {wordCount}/{MAX_WORDS}
+            </div>
+          </div>
 
         {speechSupported && (
           <button
@@ -198,13 +279,14 @@ export function TaskChat() {
           </button>
         )}
 
-        <button
-          type="submit"
-          disabled={!input.trim() || loading}
-          className="shrink-0 size-9 rounded-lg bg-green-500 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
-        >
-          <Send className="size-4 text-white" />
-        </button>
+          <button
+            type="submit"
+            disabled={!input.trim() || loading || wordCount > MAX_WORDS}
+            className="shrink-0 size-9 rounded-lg bg-green-500 hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors"
+          >
+            <Send className="size-4 text-white" />
+          </button>
+        </div>
       </form>
     </div>
   );

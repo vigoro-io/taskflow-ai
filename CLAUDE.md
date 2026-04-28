@@ -17,14 +17,15 @@ npm run test -- <path>                             # Run specific test file (e.g
 npm run test:coverage                              # Run unit tests with coverage (80% threshold enforced)
 npm run test:e2e                                   # Run E2E tests with Playwright
 npm run test:e2e:ui                                # Run E2E tests with Playwright UI (interactive)
-npm run test:e2e:headed                            # Run E2E tests in headed mode (see browser)
 ```
 
 TypeScript strict mode is enforced in builds. No linter is configured.
 
 ### Utility Scripts
 
-- **`scripts/reset-password.ts`** - Admin script to reset user passwords using Supabase Admin API. Requires `SUPABASE_SERVICE_ROLE_KEY`. Automatically confirms email (sets `email_confirmed_at`) to allow immediate login without email verification.
+Scripts in `scripts/` directory are run via npm aliases above. They use `tsx` for TypeScript execution and require `SUPABASE_SERVICE_ROLE_KEY` for database operations:
+
+- **`scripts/reset-password.ts`** - Admin script to reset user passwords using Supabase Admin API. Automatically confirms email (sets `email_confirmed_at`) to allow immediate login without email verification.
 - **`scripts/diagnose-chat.ts`** - Diagnostic tool that verifies all chat system dependencies (API keys, database connection, RPC functions, embeddings). Checks Anthropic, Voyage AI, and Supabase configs.
 - **`scripts/embed-all-tasks.ts`** - Batch-generates vector embeddings for all tasks using Voyage AI (voyage-3.5 model, 1024-dimensional). Processes 20 tasks at a time to stay within API limits.
 
@@ -122,8 +123,8 @@ export async function actionName(params) {
 
 **Middleware (`middleware.ts`):**
 - Refreshes Supabase session on every request (required for SSR auth)
-- **CRITICAL:** The `await supabase.auth.getUser()` call (line 33) must stay even though the result isn't used. Removing it breaks authentication - it triggers the session refresh mechanism.
-- **DO NOT** run code between `createServerClient` and `supabase.auth.getUser()` - this can cause random logouts
+- **CRITICAL:** The `await supabase.auth.getUser()` call at line 33 must remain. It triggers the session refresh mechanism even though the result isn't used. Removing it breaks authentication and causes random logouts.
+- **DO NOT** run code between `createServerClient` and `supabase.auth.getUser()` - this breaks session management
 
 **Login flow:**
 - `src/app/login/page.tsx` - Server Component with login server action
@@ -249,21 +250,15 @@ SQL migrations live in `supabase/migrations/` (numbered `004_` onwards - earlier
 
 ### E2E Tests (Playwright)
 
-- **Config:** `playwright.config.ts` - Chromium only, workers:1 in CI, auto-starts dev server on port 3000
+- **Config:** `playwright.config.ts` - Chromium only, workers:1 in CI, auto-starts dev server on port 3000 with 60s timeout
 - **Auth setup:** `e2e/auth.setup.ts` - Creates test user via Supabase Admin API, stores session in `.auth/user.json`
-- **Location:** All E2E tests in `e2e/` directory
-- **Retries:** 2 retries in CI, 0 in local development
-
-**Test files:**
-- `e2e/auth.setup.ts` - Creates authenticated session before test execution
-- `e2e/login.spec.ts` - Login page display, form validation, redirect to dashboard, error messages
-- `e2e/dashboard.spec.ts` - Kanban board display, task columns, task interaction, responsive layout
+- **Location:** Tests in `e2e/` directory (files matching `*.spec.ts`)
+- **Retries:** 2 in CI, 0 locally; trace captured on first retry for debugging
 
 **Best practices:**
 - Use semantic selectors: `getByRole()`, `getByLabel()`, `getByText()`
-- Auth setup runs as dependency; chromium project waits for it
-- Storage state persists between tests via `.auth/user.json`
-- Trace data captured on first retry for debugging
+- Auth setup runs as dependency before chromium tests; storage state persists via `.auth/user.json`
+- Tests run fully in parallel unless `workers: 1` is set
 
 ### Custom Hooks
 
@@ -379,7 +374,7 @@ Common issues:
 - **Build errors:** Delete `.next/` and restart: `rm -rf .next && npm run dev`
 - **Port conflicts:** Kill all Node processes: `pkill -f "next dev"`
 - **Path alias `@/*` not working:** Restart TypeScript server (Cmd+Shift+P in VS Code)
-- **Auth not working:** Verify `middleware.ts` line 33 has `await supabase.auth.getUser()` call — do not remove
+- **Auth not working:** Verify `middleware.ts` line 33 has `await supabase.auth.getUser()` call — never remove or modify
 - **User can't login after password reset:** Check `email_confirmed_at` is not NULL in `auth.users`
 - **RPC function error:** Run migrations: `supabase db push` or execute SQL files in order from `supabase/migrations/`
 - **Test user email not confirming:** Use reset-password script: `npm run script:reset-password test@example.com password123`

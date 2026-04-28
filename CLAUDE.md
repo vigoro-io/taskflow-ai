@@ -14,35 +14,37 @@ npm run script:embed-tasks                         # Generate embeddings for all
 npm run test                                       # Run all unit tests with Vitest
 npm run test:watch                                 # Run unit tests in watch mode
 npm run test -- <path>                             # Run specific test file (e.g., src/actions/__tests__/chat.test.ts)
-npm run test:coverage                              # Run unit tests with coverage report (80% threshold)
+npm run test:coverage                              # Run unit tests with coverage (80% threshold enforced)
 npm run test:e2e                                   # Run E2E tests with Playwright
 npm run test:e2e:ui                                # Run E2E tests with Playwright UI (interactive)
 npm run test:e2e:headed                            # Run E2E tests in headed mode (see browser)
 ```
 
-No linter is configured. TypeScript strict mode is enforced in builds.
+TypeScript strict mode is enforced in builds. No linter is configured.
 
 ### Utility Scripts
 
-- **`scripts/reset-password.ts`** - Admin script to reset user passwords using Supabase Admin API. Requires `SUPABASE_SERVICE_ROLE_KEY`. Automatically confirms email to allow immediate login.
-- **`scripts/diagnose-chat.ts`** - Diagnostic tool that verifies all chat system dependencies (API keys, database, RPC functions). Run with: `npm run script:diagnose`
-- **`scripts/embed-all-tasks.ts`** - Batch-generates vector embeddings for all tasks using Voyage AI (voyage-3.5). Processes 20 tasks at a time. Run with: `npm run script:embed-tasks`
+- **`scripts/reset-password.ts`** - Admin script to reset user passwords using Supabase Admin API. Requires `SUPABASE_SERVICE_ROLE_KEY`. Automatically confirms email (sets `email_confirmed_at`) to allow immediate login without email verification.
+- **`scripts/diagnose-chat.ts`** - Diagnostic tool that verifies all chat system dependencies (API keys, database connection, RPC functions, embeddings). Checks Anthropic, Voyage AI, and Supabase configs.
+- **`scripts/embed-all-tasks.ts`** - Batch-generates vector embeddings for all tasks using Voyage AI (voyage-3.5 model, 1024-dimensional). Processes 20 tasks at a time to stay within API limits.
 
 ## Environment Variables
 
 Requires a `.env.local` with:
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGc...              # Public anon key
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGc...                  # Admin API key (scripts only, keep secret)
-ANTHROPIC_API_KEY=sk-ant-...                          # Chat action (claude-sonnet-4-5)
-VOYAGE_API_KEY=pa-...                                 # Embeddings via Voyage AI (voyage-3.5, 1024-dim)
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGc...              # Public anon key (safe in browser)
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGc...                  # Admin API key (server-side only, keep secret)
+ANTHROPIC_API_KEY=sk-ant-...                          # Chat action (uses claude-haiku-4-5 by default, upgrades to claude-sonnet-4-5)
+VOYAGE_API_KEY=pa-...                                 # Embeddings via Voyage AI (voyage-3.5, 1024-dimensional)
 TEST_USER_EMAIL=test@taskflow.ai                      # Optional: E2E test user (defaults to test@taskflow.ai)
 TEST_USER_PASSWORD=testpassword123                    # Optional: E2E test password (defaults to testpassword123)
 ```
 
 **Get Supabase credentials:** Project Dashboard → Settings → API
-- `SUPABASE_SERVICE_ROLE_KEY` is **secret** - only use in server scripts, never in frontend code
+- `SUPABASE_SERVICE_ROLE_KEY` is **secret** — only use in server scripts, never in frontend code or `.env.example`
+
+**Example `.env.example`** included for students — contains template without real values
 
 ## Architecture
 
@@ -182,15 +184,20 @@ Always use these constants instead of hardcoding strings.
    - Retrieves context snippets; if <2 tasks found, returns short yes/no response (≤10 words)
    - Otherwise formats task context as numbered list with title + first 100 chars of description
 
-4. **Chat generation**:
-   - Sends context + user message to Claude Sonnet 4.5 (max_tokens: 1024)
-   - System prompt instructs concise Spanish responses with sources
+4. **Chat generation with dual-model support**:
+   - Automatically selects between Claude Haiku 4.5 (fast, concise) and Sonnet 4.5 (detailed analysis)
+   - Default: Haiku with `isComplexQuery()` detection for complex questions
+   - Max tokens: 150 (Haiku) or 300 (Sonnet) for strict conciseness
+   - System prompt enforces "Sí/No" format with ≤10 word explanations for simple queries
+   - Recognizes when users explicitly ask for details (via `isAskingForDetails()`) and switches to detailed mode
 
 **Embedding generation:**
 - When tasks are created/updated, `embedTask()` (`src/lib/embed-task.ts`) generates and upserts vectors
 - Format: `title. description. Prioridad: X. Estado: Y`
-- Uses Voyage AI `voyage-3.5` with `input_type: "document"`
-- Embeddings are 1024-dimensional halfvec, indexed with HNSW for fast cosine search
+- Uses Voyage AI `voyage-3.5` with `input_type: "document"` (document mode optimized for full task text)
+- Query embeddings use `input_type: "query"` for better semantic matching
+- Embeddings are 1024-dimensional halfvec, indexed with HNSW for fast cosine similarity search
+- Batch processing: Voyage API supports up to 128 documents per request
 
 ### Database schema
 
@@ -223,12 +230,15 @@ SQL migrations live in `supabase/migrations/` (numbered `004_` onwards - earlier
 - **Location:** Tests live next to source files in `__tests__/` directories
 
 **Test files:**
-- `src/actions/__tests__/tasks.test.ts` - Server actions with mocked Supabase
-- `src/hooks/__tests__/use-tasks-by-status.test.ts` - Hook tests with renderHook
+- `src/actions/__tests__/chat.test.ts` - Chat action with model selection and response formatting
+- `src/actions/__tests__/search.test.ts` - Semantic search with pgvector and RLS filtering
+- `src/actions/__tests__/tasks.test.ts` - Task CRUD with embedding generation
+- `src/hooks/__tests__/use-tasks-by-status.test.ts` - Hook for grouping tasks by status
 
 **Mocking strategy:**
 - Mock `@/lib/supabase/server` and `@/lib/supabase/client` entirely
 - Mock `next/cache` for revalidatePath
+- Mock external APIs (Anthropic, Voyage) for deterministic tests
 - Use `vi.mock()` for module mocking
 - Example pattern:
   ```typescript
@@ -239,18 +249,21 @@ SQL migrations live in `supabase/migrations/` (numbered `004_` onwards - earlier
 
 ### E2E Tests (Playwright)
 
-- **Config:** `playwright.config.ts` - Chromium only, workers:1 in CI, auto-starts dev server
+- **Config:** `playwright.config.ts` - Chromium only, workers:1 in CI, auto-starts dev server on port 3000
 - **Auth setup:** `e2e/auth.setup.ts` - Creates test user via Supabase Admin API, stores session in `.auth/user.json`
 - **Location:** All E2E tests in `e2e/` directory
+- **Retries:** 2 retries in CI, 0 in local development
 
 **Test files:**
-- `e2e/login.spec.ts` - Login flow, error handling, auth guards (3 tests)
-- `e2e/dashboard.spec.ts` - Kanban columns, tasks display, UI elements (4 tests)
+- `e2e/auth.setup.ts` - Creates authenticated session before test execution
+- `e2e/login.spec.ts` - Login page display, form validation, redirect to dashboard, error messages
+- `e2e/dashboard.spec.ts` - Kanban board display, task columns, task interaction, responsive layout
 
 **Best practices:**
 - Use semantic selectors: `getByRole()`, `getByLabel()`, `getByText()`
-- Auth setup runs first as dependency of chromium project
-- Storage state persists between tests for performance
+- Auth setup runs as dependency; chromium project waits for it
+- Storage state persists between tests via `.auth/user.json`
+- Trace data captured on first retry for debugging
 
 ### Custom Hooks
 
@@ -298,9 +311,10 @@ Three main hooks power the Kanban board:
 
 **Spanish localization:**
 - All UI labels, error messages, and placeholder text in Spanish
-- Use KANBAN_COLUMNS and PRIORITY_CONFIG constants for display mappings
+- Use `KANBAN_COLUMNS` and `PRIORITY_CONFIG` constants for display mappings (see `src/types/tasks.ts`)
 - Task statuses: `"todo"` → "Por hacer", `"in_progress"` → "En progreso", `"done"` → "Terminado"
 - Priority labels: `"low"` → "BAJA", `"medium"` → "MEDIA", `"high"` → "ALTA", `"critical"` → "CRÍTICA"
+- Query normalization: `normalizeQuery()` in `src/lib/query-normalizer.ts` handles Spanish status aliases for semantic search
 
 ## Quick Reference
 
@@ -324,10 +338,31 @@ import { normalizeQuery } from "@/lib/query-normalizer";
 ```
 
 **Testing patterns:**
-- Unit tests in `__tests__/` subdirectories (e.g., `src/actions/__tests__/chat.test.ts`)
+- Unit tests live in `__tests__/` subdirectories (e.g., `src/actions/__tests__/chat.test.ts`)
 - Mock Supabase: `vi.mock("@/lib/supabase/server", { createClient: vi.fn(...) })`
-- E2E tests use authenticated session from `.auth/user.json` (populated by auth.setup.ts)
+- Mock Anthropic: `vi.mock("@anthropic-ai/sdk")` with full response objects
+- Mock Voyage: `vi.mock("voyageai")` to avoid real API calls
+- E2E tests use authenticated session from `.auth/user.json` (populated by `e2e/auth.setup.ts`)
 - Run specific test: `npm run test -- src/actions/__tests__/chat.test.ts`
+- Coverage threshold enforced at 80% (lines, branches, functions, statements)
+
+## Model Selection Logic
+
+The chat system intelligently selects between Haiku and Sonnet based on query complexity:
+
+**Haiku (default)** - Fast, concise responses:
+- Simple yes/no questions
+- Task status checks
+- Quick queries about task counts
+- Response format: "Sí/No" + ≤10 words
+
+**Sonnet (automatic upgrade)** - Detailed analysis:
+- Keywords: "analiza", "compara", "explica", "recomendaciones", etc.
+- Long queries (>100 characters)
+- Multiple questions (>1 question mark)
+- Explicit detail requests: "cuéntame más", "amplia", "más detalles", etc.
+
+User can override model selection via UI (if implemented in component).
 
 ## Troubleshooting
 
@@ -340,12 +375,15 @@ Common issues:
 
 - **Chat error "Ocurrió un error...":** `ANTHROPIC_API_KEY` invalid/missing. See TROUBLESHOOTING.md for setup
 - **No search results:** Run `npm run script:embed-tasks` to generate embeddings for existing tasks
+- **Tests fail with coverage errors:** Ensure test files are in `__tests__/` subdirectories; excluded paths don't count toward coverage
 - **Build errors:** Delete `.next/` and restart: `rm -rf .next && npm run dev`
 - **Port conflicts:** Kill all Node processes: `pkill -f "next dev"`
 - **Path alias `@/*` not working:** Restart TypeScript server (Cmd+Shift+P in VS Code)
 - **Auth not working:** Verify `middleware.ts` line 33 has `await supabase.auth.getUser()` call — do not remove
-- **User can't login after password reset:** Check `email_confirmed_at` is not NULL: `SELECT email, email_confirmed_at FROM auth.users WHERE email = 'user@example.com';`
+- **User can't login after password reset:** Check `email_confirmed_at` is not NULL in `auth.users`
 - **RPC function error:** Run migrations: `supabase db push` or execute SQL files in order from `supabase/migrations/`
 - **Test user email not confirming:** Use reset-password script: `npm run script:reset-password test@example.com password123`
+- **E2E tests timeout:** Increase `timeout` in `playwright.config.ts` (currently 60000ms)
+- **E2E tests fail on CI:** Check `workers: 1` is set in CI env to prevent race conditions
 
 See **TROUBLESHOOTING.md** for detailed solutions and Spanish error messages.

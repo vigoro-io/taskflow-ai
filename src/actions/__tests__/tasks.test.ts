@@ -135,9 +135,16 @@ describe("Server Actions - Tasks", () => {
     it("actualiza el estado de la tarea correctamente", async () => {
       const taskId = "task-123";
       const newStatus = "done" as const;
+      const mockUser = { id: "user-123", email: "test@test.com" };
+
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null,
+      });
 
       const mockUpdate = vi.fn().mockReturnThis();
-      const mockEq = vi.fn().mockResolvedValue({
+      const mockEq1 = vi.fn().mockReturnThis();
+      const mockEq2 = vi.fn().mockResolvedValue({
         error: null,
       });
 
@@ -146,7 +153,11 @@ describe("Server Actions - Tasks", () => {
       });
 
       mockUpdate.mockReturnValue({
-        eq: mockEq,
+        eq: mockEq1,
+      });
+
+      mockEq1.mockReturnValue({
+        eq: mockEq2,
       });
 
       await updateTaskStatus(taskId, newStatus);
@@ -158,7 +169,8 @@ describe("Server Actions - Tasks", () => {
           updated_at: expect.any(String),
         })
       );
-      expect(mockEq).toHaveBeenCalledWith("id", taskId);
+      expect(mockEq1).toHaveBeenCalledWith("id", taskId);
+      expect(mockEq2).toHaveBeenCalledWith("user_id", mockUser.id);
 
       const { revalidatePath } = await import("next/cache");
       expect(revalidatePath).toHaveBeenCalledWith("/dashboard");
@@ -167,10 +179,17 @@ describe("Server Actions - Tasks", () => {
     it("lanza error cuando falla la actualización", async () => {
       const taskId = "task-123";
       const newStatus = "done" as const;
+      const mockUser = { id: "user-123", email: "test@test.com" };
       const mockError = { message: "Update failed" };
 
+      mockSupabase.auth.getUser.mockResolvedValue({
+        data: { user: mockUser },
+        error: null,
+      });
+
       const mockUpdate = vi.fn().mockReturnThis();
-      const mockEq = vi.fn().mockResolvedValue({
+      const mockEq1 = vi.fn().mockReturnThis();
+      const mockEq2 = vi.fn().mockResolvedValue({
         error: mockError,
       });
 
@@ -179,7 +198,11 @@ describe("Server Actions - Tasks", () => {
       });
 
       mockUpdate.mockReturnValue({
-        eq: mockEq,
+        eq: mockEq1,
+      });
+
+      mockEq1.mockReturnValue({
+        eq: mockEq2,
       });
 
       await expect(updateTaskStatus(taskId, newStatus)).rejects.toThrow(

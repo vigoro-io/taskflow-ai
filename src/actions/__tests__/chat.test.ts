@@ -46,7 +46,7 @@ describe("chatWithTasks", () => {
     vi.mocked(searchModule.searchTasks).mockResolvedValue([]);
 
     mockCreate.mockResolvedValue({
-      content: [{ type: "text", text: "No encontré tareas relevantes." }],
+      content: [{ type: "text", text: "No." }],
     });
 
     const result = await chatWithTasks("¿qué tareas tengo?");
@@ -56,9 +56,9 @@ describe("chatWithTasks", () => {
     expect(result.sources).toEqual([]);
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "claude-sonnet-4-5",
-        max_tokens: 1024,
-        system: expect.stringContaining("No se encontraron tareas relevantes"),
+        model: "claude-haiku-4-5",
+        max_tokens: 150,
+        system: expect.stringContaining("No se encontraron tareas"),
       })
     );
   });
@@ -83,7 +83,7 @@ describe("chatWithTasks", () => {
       content: [
         {
           type: "text",
-          text: "Tienes 2 tareas: completar informe y revisar código.",
+          text: "Sí, tienes 2 tareas.",
         },
       ],
     });
@@ -91,12 +91,14 @@ describe("chatWithTasks", () => {
     const result = await chatWithTasks("¿qué tareas tengo pendientes?");
 
     expect(result.answer).toBe(
-      "Tienes 2 tareas: completar informe y revisar código."
+      "Sí, tienes 2 tareas."
     );
     expect(result.sources).toEqual(mockSources);
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        system: expect.stringContaining("[1] Completar informe"),
+        model: "claude-haiku-4-5",
+        max_tokens: 150,
+        system: expect.stringContaining("1. Completar informe"),
       })
     );
   });

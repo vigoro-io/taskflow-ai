@@ -11,39 +11,99 @@ export type SearchResult = {
   similarity: number;
 };
 
+type SupabaseClient = Awaited<ReturnType<typeof createClient>>;
+
+// Traducciones de status
+const STATUS_LABELS: Record<Task["status"], string> = {
+  "todo": "por hacer",
+  "in_progress": "en progreso",
+  "done": "terminado",
+};
+
+// Traducciones de prioridad
+const PRIORITY_LABELS: Record<Task["priority"], string> = {
+  "low": "baja",
+  "medium": "media",
+  "high": "alta",
+  "critical": "crítica",
+};
+
 /**
- * Busca tareas combinando búsqueda semántica y búsqueda por estado
+ * Obtiene la etiqueta de estado en español
  */
-export async function searchTasks(
-  query: string,
-  matchThreshold = 0.5,
-  matchCount = 10
-): Promise<SearchResult[]> {
-  const supabase = await createClient();
+function getStatusLabel(status: Task["status"]): string {
+  return STATUS_LABELS[status];
+}
 
-  // Extraer estados mencionados en la consulta
-  const mentionedStatuses = extractStatusFromQuery(query);
+/**
+ * Obtiene la etiqueta de prioridad en español
+ */
+function getPriorityLabel(priority: Task["priority"]): string {
+  return PRIORITY_LABELS[priority];
+}
 
-  // Si se mencionan estados específicos, buscar directamente en la BD
-  if (mentionedStatuses.length > 0) {
-    const { data: tasks, error } = await supabase
-      .from("tasks")
-      .select("*")
-      .in("status", mentionedStatuses)
-      .order("created_at", { ascending: false })
-      .limit(matchCount);
+/**
+ * Formatea el contenido de una tarea para mostrar en el chat
+ */
+function formatTaskContent(task: Task): string {
+  const parts: string[] = [];
 
-    if (error) throw new Error(error.message);
+  // Título (requerido)
+  parts.push(`${task.title}.`);
 
-    // Formatear como SearchResult
-    return (tasks ?? []).map((task: Task) => ({
-      task_id: task.id,
-      content: formatTaskContent(task),
-      similarity: 1.0, // Coincidencia directa por estado
-    }));
+  // Descripción (opcional)
+  if (task.description) {
+    parts.push(`${task.description}.`);
   }
 
-  // Si no hay estados mencionados, usar búsqueda semántica
+  // Prioridad y estado
+  parts.push(`Prioridad: ${getPriorityLabel(task.priority)}.`);
+  parts.push(`Estado: ${getStatusLabel(task.status)}`);
+
+  // Fecha de vencimiento (opcional)
+  if (task.due_date) {
+    const date = new Date(task.due_date).toLocaleDateString("es-ES");
+    parts.push(`Vence: ${date}`);
+  }
+
+  return parts.join(" ");
+}
+
+/**
+ * Busca tareas por estado
+ * Responsabilidad: ejecutar búsqueda en BD por estado mencionado
+ */
+async function searchByStatus(
+  supabase: SupabaseClient,
+  statuses: string[],
+  matchCount: number
+): Promise<SearchResult[]> {
+  const { data: tasks, error } = await supabase
+    .from("tasks")
+    .select("*")
+    .in("status", statuses)
+    .order("created_at", { ascending: false })
+    .limit(matchCount);
+
+  if (error) throw new Error(error.message);
+
+  return (tasks ?? []).map((task: Task) => ({
+    task_id: task.id,
+    content: formatTaskContent(task),
+    similarity: 1.0, // Coincidencia directa por estado
+  }));
+}
+
+/**
+ * Busca tareas por semántica (vector embeddings)
+ * Responsabilidad: ejecutar búsqueda semántica via RPC
+ */
+async function searchBySemantics(
+  supabase: SupabaseClient,
+  query: string,
+  matchThreshold: number,
+  matchCount: number
+): Promise<SearchResult[]> {
   const queryEmbedding = await embedQuery(query);
 
   const { data, error } = await supabase.rpc("match_task_embeddings", {
@@ -58,30 +118,24 @@ export async function searchTasks(
 }
 
 /**
- * Formatea el contenido de una tarea para mostrar en el chat
+ * Busca tareas combinando búsqueda por estado y búsqueda semántica
+ * Responsabilidad: orquestar estrategia de búsqueda
  */
-function formatTaskContent(task: Task): string {
-  const statusLabel = task.status === "todo" ? "por hacer" :
-                      task.status === "in_progress" ? "en progreso" :
-                      "terminado";
+export async function searchTasks(
+  query: string,
+  matchThreshold = 0.5,
+  matchCount = 10
+): Promise<SearchResult[]> {
+  const supabase = await createClient();
 
-  const priorityLabel = task.priority === "low" ? "baja" :
-                        task.priority === "medium" ? "media" :
-                        task.priority === "high" ? "alta" :
-                        "crítica";
+  // Extraer estados mencionados en la consulta
+  const mentionedStatuses = extractStatusFromQuery(query);
 
-  let content = `${task.title}.`;
-
-  if (task.description) {
-    content += ` ${task.description}.`;
+  // Si se mencionan estados específicos, buscar directamente en la BD
+  if (mentionedStatuses.length > 0) {
+    return searchByStatus(supabase, mentionedStatuses, matchCount);
   }
 
-  content += ` Prioridad: ${priorityLabel}. Estado: ${statusLabel}`;
-
-  if (task.due_date) {
-    const date = new Date(task.due_date).toLocaleDateString("es-ES");
-    content += `. Vence: ${date}`;
-  }
-
-  return content;
+  // Si no hay estados mencionados, usar búsqueda semántica
+  return searchBySemantics(supabase, query, matchThreshold, matchCount);
 }

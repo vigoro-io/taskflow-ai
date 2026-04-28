@@ -63,29 +63,26 @@ function isComplexQuery(query: string): boolean {
   return hasComplexKeywords || isLongQuery || hasMultipleQuestions;
 }
 
-export async function chatWithTasks(
-  userMessage: string,
-  model: ModelType = "haiku"
-): Promise<ChatResponse> {
-  const sources = await searchTasks(userMessage, 0.3, 10);
-
-  // Determinar si la pregunta es compleja o si pide detalles
-  const askingForDetails = isAskingForDetails(userMessage);
-  const isComplex = isComplexQuery(userMessage);
-  const suggestSonnet = isComplex && model === "haiku" && !askingForDetails;
-
-  // Construir contexto más informativo
-  let context = "";
+/**
+ * Formatea el contexto de tareas para el prompt
+ * Responsabilidad: convertir SearchResults en string legible
+ */
+function formatContext(sources: SearchResult[]): string {
   if (sources.length > 0) {
-    context = "Tareas encontradas:\n" + sources.map((r, i) =>
+    return "Tareas encontradas:\n" + sources.map((r, i) =>
       `${i + 1}. ${r.content}`
     ).join("\n");
-  } else {
-    context = "No se encontraron tareas que coincidan con la búsqueda.";
   }
+  return "No se encontraron tareas que coincidan con la búsqueda.";
+}
 
-  const systemPrompt = askingForDetails
-    ? `Eres un asistente de gestión de tareas para TaskFlow AI.
+/**
+ * Construye el system prompt basado en el tipo de respuesta esperada
+ * Responsabilidad: generar prompt según contexto y estilo
+ */
+function buildSystemPrompt(context: string, askingForDetails: boolean): string {
+  if (askingForDetails) {
+    return `Eres un asistente de gestión de tareas para TaskFlow AI.
 
 ${context}
 
@@ -95,8 +92,10 @@ El usuario está pidiendo DETALLES ESPECÍFICOS. Proporciona:
 - Fechas si son relevantes
 - Sé completo pero organizado
 
-Responde SOLO con información del contexto proporcionado arriba.`
-    : `Eres un asistente conciso de gestión de tareas para TaskFlow AI.
+Responde SOLO con información del contexto proporcionado arriba.`;
+  }
+
+  return `Eres un asistente conciso de gestión de tareas para TaskFlow AI.
 
 ${context}
 
@@ -119,14 +118,56 @@ ESTADOS:
 - "por hacer" = pendiente
 - "en progreso" = activo
 - "terminado" = completo`;
+}
 
+/**
+ * Selecciona el modelo y configuración basado en la complejidad de la query
+ * Responsabilidad: mapear condiciones → config de modelo
+ */
+function selectModelConfig(
+  userModel: ModelType,
+  askingForDetails: boolean,
+  isComplex: boolean
+): { modelId: string; maxTokens: number } {
+  // Si pide detalles explícitamente, usa Sonnet
+  if (askingForDetails) {
+    return { modelId: "claude-sonnet-4-5", maxTokens: 300 };
+  }
+
+  // Si la pregunta es compleja, usa Sonnet
+  if (isComplex && userModel === "haiku") {
+    return { modelId: "claude-sonnet-4-5", maxTokens: 300 };
+  }
+
+  // Default: usa el modelo seleccionado
+  const modelId = userModel === "sonnet" ? "claude-sonnet-4-5" : "claude-haiku-4-5";
+  const maxTokens = userModel === "sonnet" ? 300 : 150;
+
+  return { modelId, maxTokens };
+}
+
+/**
+ * Orquestador principal del chat con tareas
+ * Responsabilidad: coordinar búsqueda, formateo y generación de respuesta
+ */
+export async function chatWithTasks(
+  userMessage: string,
+  model: ModelType = "haiku"
+): Promise<ChatResponse> {
+  // Buscar tareas relevantes
+  const sources = await searchTasks(userMessage, 0.3, 10);
+
+  // Análisis de la query
+  const askingForDetails = isAskingForDetails(userMessage);
+  const isComplex = isComplexQuery(userMessage);
+
+  // Construir contexto y prompt
+  const context = formatContext(sources);
+  const systemPrompt = buildSystemPrompt(context, askingForDetails);
+  const { modelId, maxTokens } = selectModelConfig(model, askingForDetails, isComplex);
+
+  // Llamar a Claude
   const anthropic = getAnthropicClient();
-  const modelId = model === "sonnet" ? "claude-sonnet-4-5" : "claude-haiku-4-5";
-
-  // Tokens más bajos para respuestas concisas
-  // Haiku: 150 tokens (aprox 15-20 palabras), Sonnet: 300 para análisis complejos
-  const maxTokens = model === "sonnet" ? 300 : 150;
-
   const response = await anthropic.messages.create({
     model: modelId,
     max_tokens: maxTokens,
@@ -134,6 +175,7 @@ ESTADOS:
     messages: [{ role: "user", content: userMessage }],
   });
 
+  // Extraer respuesta
   const block = response.content[0];
   if (block.type !== "text") throw new Error("Unexpected response type");
 
@@ -141,6 +183,6 @@ ESTADOS:
     answer: block.text,
     sources,
     isComplex,
-    suggestSonnet,
+    suggestSonnet: isComplex && model === "haiku" && !askingForDetails,
   };
 }

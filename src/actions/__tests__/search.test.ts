@@ -157,7 +157,7 @@ describe("searchTasks", () => {
     expect(mockRpc).toHaveBeenCalledWith("match_task_embeddings", {
       query_embedding: JSON.stringify(testEmbedding),
       match_threshold: 0.5,
-      match_count: 5,
+      match_count: 10,
     });
   });
 });
